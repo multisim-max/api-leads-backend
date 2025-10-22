@@ -29,15 +29,19 @@ const caCert = fs.readFileSync(
   path.resolve(__dirname, 'ca-cert.crt')
 ).toString();
 
-// A Solução Correta: Usar a string de conexão E o objeto SSL.
-// O driver 'pg' vai mesclar os dois, usando o 'ca' do nosso objeto.
-const pool = new Pool({
-  // 1. Usar a string de conexão que a DO nos dá (ela tem host, user, pass, etc.)
-  connectionString: process.env.DATABASE_URL,
+// Pegamos a URL de conexão
+const connectionString = process.env.DATABASE_URL;
 
-  // 2. FORÇAR a conexão a usar nosso certificado baixado
+// A JOGADA FINAL: Limpamos a URL de qualquer parâmetro ?sslmode=...
+// Isso remove o conflito, forçando o 'pg' a usar nosso objeto 'ssl' abaixo.
+const cleanedConnectionString = connectionString.split('?')[0];
+
+const pool = new Pool({
+  // 1. Usamos a string de conexão LIMPA
+  connectionString: cleanedConnectionString, 
+
+  // 2. Agora este objeto SSL será a única instrução
   ssl: {
-    // 'rejectUnauthorized' é 'true' por padrão quando 'ca' é fornecido
     ca: caCert
   }
 });
