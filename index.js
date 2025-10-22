@@ -34,7 +34,7 @@ const pool = new Pool({
 
 // Rota de "saúde" - para verificar se a API está no ar
 app.get('/', (req, res) => {
-  res.send('API de Leads está no ar! 🚀');
+  res.send('VERSÃO 2 DA API. TESTANDO CORREÇÃO SSL. 🚀');
 });
 
 // Rota para criar a tabela do banco de dados (só para teste inicial)
