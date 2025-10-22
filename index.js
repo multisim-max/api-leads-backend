@@ -29,11 +29,21 @@ const caCert = fs.readFileSync(
   path.resolve(__dirname, 'ca-cert.crt')
 ).toString();
 
+// Vamos construir a conexão manualmente para forçar o uso do nosso certificado.
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  // NÃO vamos usar a connectionString, pois ela sobrepõe nossa config SSL.
+  // connectionString: process.env.DATABASE_URL,
+
+  // A DigitalOcean injeta estas variáveis automaticamente quando anexamos o banco:
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+
   ssl: {
-    rejectUnauthorized: true, // Agora vamos verificar (é mais seguro)
-    ca: caCert                // E aqui está o certificado para confiar
+    rejectUnauthorized: true, // Continuamos verificando (seguro)
+    ca: caCert                // E fornecendo o certificado que baixamos
   }
 });
 
