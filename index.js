@@ -29,21 +29,16 @@ const caCert = fs.readFileSync(
   path.resolve(__dirname, 'ca-cert.crt')
 ).toString();
 
-// Vamos construir a conexão manualmente para forçar o uso do nosso certificado.
+// A Solução Correta: Usar a string de conexão E o objeto SSL.
+// O driver 'pg' vai mesclar os dois, usando o 'ca' do nosso objeto.
 const pool = new Pool({
-  // NÃO vamos usar a connectionString, pois ela sobrepõe nossa config SSL.
-  // connectionString: process.env.DATABASE_URL,
+  // 1. Usar a string de conexão que a DO nos dá (ela tem host, user, pass, etc.)
+  connectionString: process.env.DATABASE_URL,
 
-  // A DigitalOcean injeta estas variáveis automaticamente quando anexamos o banco:
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
-
+  // 2. FORÇAR a conexão a usar nosso certificado baixado
   ssl: {
-    rejectUnauthorized: true, // Continuamos verificando (seguro)
-    ca: caCert                // E fornecendo o certificado que baixamos
+    // 'rejectUnauthorized' é 'true' por padrão quando 'ca' é fornecido
+    ca: caCert
   }
 });
 
