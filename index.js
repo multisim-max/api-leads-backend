@@ -26,6 +26,7 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false // Necessário para conexões SSL na DigitalOcean
+    // FORÇANDO ATUALIZAÇÃO
   }
 });
 
