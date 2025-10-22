@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+
 // Carrega as variáveis de ambiente (como DATABASE_URL)
 require('dotenv').config();
 
@@ -21,12 +24,16 @@ app.use(cors({
 app.use(express.json());
 
 // 3. Configuração do Banco de Dados
-// O 'Pool' usa a variável 'DATABASE_URL' que a DigitalOcean injetou automaticamente.
+// Carrega o certificado CA da DigitalOcean que baixamos
+const caCert = fs.readFileSync(
+  path.resolve(__dirname, 'ca-cert.crt')
+).toString();
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false // Necessário para conexões SSL na DigitalOcean
-    // FORÇANDO ATUALIZAÇÃO
+    rejectUnauthorized: true, // Agora vamos verificar (é mais seguro)
+    ca: caCert                // E aqui está o certificado para confiar
   }
 });
 
