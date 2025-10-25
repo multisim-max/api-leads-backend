@@ -141,7 +141,7 @@ async function createKommoLead(leadData) {
 // --- Rotas da API ---
 
 app.get('/', (req, res) => {
-  res.send('VERSÃO 7 DA API. 🚀');
+  res.send('VERSÃO 8 DA API. 🚀');
 });
 
 // Rota de setup (não muda)
@@ -247,6 +247,31 @@ app.get('/setup-logs-table', async (req, res) => {
     res.status(200).send('Tabela "request_logs" (registros) verificada/criada com sucesso!');
   } catch (error) {
     console.error('Erro ao criar tabela request_logs:', error);
+    res.status(500).send('Erro no servidor ao criar tabela.');
+  }
+});
+
+// --- (NOVA ROTA DE SETUP) ---
+// ROTA 5: Para criar a tabela de mapeamento (Execute 1 vez)
+app.get('/setup-mappings-table', async (req, res) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS field_mappings (
+        id SERIAL PRIMARY KEY,
+        source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,
+        campo_fonte VARCHAR(255) NOT NULL,
+        tipo_campo_kommo VARCHAR(50) NOT NULL,
+        codigo_campo_kommo VARCHAR(255) NOT NULL,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    // Adiciona um índice para buscas rápidas por source_id
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_mappings_source_id ON field_mappings(source_id);
+    `);
+    res.status(200).send('Tabela "field_mappings" (mapeamento) verificada/criada com sucesso!');
+  } catch (error) {
+    console.error('Erro ao criar tabela field_mappings:', error);
     res.status(500).send('Erro no servidor ao criar tabela.');
   }
 });
