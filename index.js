@@ -141,7 +141,7 @@ async function createKommoLead(leadData) {
 // --- Rotas da API ---
 
 app.get('/', (req, res) => {
-  res.send('VERSÃO 6 DA API. Criando Tabela Sources. 🚀');
+  res.send('VERSÃO 7 DA API. 🚀');
 });
 
 // Rota de setup (não muda)
@@ -220,6 +220,33 @@ app.get('/setup-sources-table', async (req, res) => {
     res.status(200).send('Tabela "sources" (fontes) verificada/criada com sucesso!');
   } catch (error) {
     console.error('Erro ao criar tabela sources:', error);
+    res.status(500).send('Erro no servidor ao criar tabela.');
+  }
+});
+// --- (NOVA ROTA DE SETUP) ---
+// ROTA 4: Para criar a tabela de logs (Execute 1 vez)
+app.get('/setup-logs-table', async (req, res) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS request_logs (
+        id SERIAL PRIMARY KEY,
+        source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+        estado VARCHAR(20) DEFAULT 'pendente',
+        dados_recebidos JSONB,
+        resposta_kommo JSONB,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    // Adiciona índices para acelerar as consultas do painel
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_logs_source_id ON request_logs(source_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_logs_estado ON request_logs(estado);
+    `);
+    res.status(200).send('Tabela "request_logs" (registros) verificada/criada com sucesso!');
+  } catch (error) {
+    console.error('Erro ao criar tabela request_logs:', error);
     res.status(500).send('Erro no servidor ao criar tabela.');
   }
 });
