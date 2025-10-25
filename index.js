@@ -141,7 +141,7 @@ async function createKommoLead(leadData) {
 // --- Rotas da API ---
 
 app.get('/', (req, res) => {
-  res.send('VERSÃO 5 DA API. Rotação de Token Implementada. 🚀');
+  res.send('VERSÃO 6 DA API. Criando Tabela Sources. 🚀');
 });
 
 // Rota de setup (não muda)
@@ -199,6 +199,28 @@ app.post('/set-initial-token', async (req, res) => {
   } catch (error) {
     console.error('Erro ao salvar token inicial:', error);
     res.status(500).send('Erro no servidor ao salvar token.');
+  }
+});
+// --- (NOVA ROTA DE SETUP) ---
+// ROTA 3: Para criar a tabela de fontes (Execute 1 vez)
+app.get('/setup-sources-table', async (req, res) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sources (
+        id SERIAL PRIMARY KEY,
+        nome VARCHAR(100) NOT NULL,
+        tipo VARCHAR(50) DEFAULT 'webhook',
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    // Vamos adicionar um índice para buscas por nome
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sources_nome ON sources(nome);
+    `);
+    res.status(200).send('Tabela "sources" (fontes) verificada/criada com sucesso!');
+  } catch (error) {
+    console.error('Erro ao criar tabela sources:', error);
+    res.status(500).send('Erro no servidor ao criar tabela.');
   }
 });
 
