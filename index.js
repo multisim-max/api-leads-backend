@@ -106,7 +106,7 @@ function getNestedValue(obj, path) {
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 9 DA API. Rota Inbound Dinâmica Pronta. 🚀');
+  res.send('VERSÃO 10 DA API. RRotas de Admin Prontas. 🚀 🚀');
 });
 
 // --- (NOVO!) A "SUPER-ROTA" DE INBOUND ---
@@ -222,7 +222,59 @@ app.post('/inbound/:source_name', async (req, res) => {
     res.status(500).send({ error: 'Falha ao processar o lead.', logId: logId });
   }
 });
+// --- (NOVO!) ROTAS DA API DE ADMIN (Para o Widget) ---
 
+// Rota para criar uma nova fonte
+app.post('/api/sources', async (req, res) => {
+  const { nome, tipo = 'webhook' } = req.body;
+  if (!nome) {
+    return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });
+  }
+  try {
+    const result = await pool.query(
+      'INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *',
+      [nome, tipo]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Erro ao criar source:', error);
+    res.status(500).send({ error: 'Erro ao criar fonte.' });
+  }
+});
+
+// Rota para criar/atualizar os mapeamentos de uma fonte
+app.post('/api/mappings', async (req, res) => {
+  const { source_id, mappings } = req.body;
+  if (!source_id || !mappings || !Array.isArray(mappings)) {
+    return res.status(400).send({ error: 'Estrutura de dados inválida.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. (Opcional) Limpa os mapeamentos antigos desta fonte
+    // await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]);
+
+    // 2. Insere os novos mapeamentos
+    for (const rule of mappings) {
+      await client.query(
+        `INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo)
+         VALUES ($1, $2, $3, $4)`,
+        [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erro ao salvar mapeamentos:', error);
+    res.status(500).send({ error: 'Erro ao salvar mapeamentos.' });
+  } finally {
+    client.release();
+  }
+});
 
 // --- ROTAS DE SETUP ANTIGAS (Manter por segurança) ---
 app.get('/setup-db', async (req, res) => { /* ...código antigo... */ 
