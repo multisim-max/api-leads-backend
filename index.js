@@ -2,7 +2,6 @@
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -26,26 +25,16 @@ const pool = new Pool({
   ssl: { ca: caCert }
 });
 
-// --- LÓGICA DO KOMMO (ROTAÇÃO DE TOKEN) ---
-
+// --- LÓGICA DO KOMMO (ROTAÇÃO DE TOKEN - NÃO MUDA) ---
 let kommoAccessToken = null;
 let tokenExpiresAt = 0;
-
-// Nova função para LER o token do Banco de Dados
 async function getRefreshTokenFromDB() {
   try {
     const result = await pool.query("SELECT valor FROM configuracao WHERE chave = 'KOMMO_REFRESH_TOKEN'");
-    if (result.rows.length === 0) {
-      throw new Error('KOMMO_REFRESH_TOKEN não encontrado no banco de dados.');
-    }
+    if (result.rows.length === 0) { throw new Error('KOMMO_REFRESH_TOKEN não encontrado no banco de dados.'); }
     return result.rows[0].valor;
-  } catch (error) {
-    console.error('Erro ao LER refresh_token do DB:', error);
-    throw error;
-  }
+  } catch (error) { console.error('Erro ao LER refresh_token do DB:', error); throw error; }
 }
-
-// Nova função para SALVAR o token no Banco de Dados
 async function saveRefreshTokenToDB(newToken) {
   try {
     await pool.query(
@@ -53,254 +42,210 @@ async function saveRefreshTokenToDB(newToken) {
       [newToken]
     );
     console.log('Novo refresh_token foi salvo no banco de dados com sucesso.');
-  } catch (error) {
-    console.error('Erro ao SALVAR novo refresh_token no DB:', error);
-  }
+  } catch (error) { console.error('Erro ao SALVAR novo refresh_token no DB:', error); }
 }
-
-// Função de autenticação ATUALIZADA
 async function getKommoAccessToken() {
   const now = Date.now();
   if (kommoAccessToken && now < tokenExpiresAt) {
     console.log('Usando Access Token do cache do Kommo.');
     return kommoAccessToken;
   }
-
   console.log('Access Token expirado ou inexistente. Lendo refresh_token do DB...');
   try {
-    // 1. LÊ o token do banco
     const currentRefreshToken = await getRefreshTokenFromDB();
-
-    // 2. USA o token para pedir um novo access_token
     const response = await axios.post(`${process.env.KOMMO_SUBDOMAIN}/oauth2/access_token`, {
       client_id: process.env.KOMMO_CLIENT_ID,
       client_secret: process.env.KOMMO_CLIENT_SECRET,
       grant_type: 'refresh_token',
-      refresh_token: currentRefreshToken // Usa o token do banco
+      refresh_token: currentRefreshToken
     });
-
-    // 3. GUARDA os novos tokens
     kommoAccessToken = response.data.access_token;
-    const newRefreshToken = response.data.refresh_token; // O "Token B"
+    const newRefreshToken = response.data.refresh_token;
     tokenExpiresAt = Date.now() + (response.data.expires_in - 3600) * 1000; 
-
     console.log('Novo Access Token do Kommo obtido com sucesso.');
-
-    // 4. SALVA o "Token B" de volta no banco
-    // (Não precisamos esperar isso terminar)
     saveRefreshTokenToDB(newRefreshToken);
-
     return kommoAccessToken;
-
   } catch (error) {
     console.error('Erro CRÍTICO ao buscar Access Token do Kommo:', error.response ? error.response.data : error.message);
-    // Se o token foi revogado, o erro 401 aparecerá aqui.
-    // Isso indicará que o token no DB está permanentemente inválido.
     throw new Error('Falha ao autenticar com Kommo.');
   }
 }
 
-// (A função createKommoLead não muda, ela apenas usa getKommoAccessToken)
-async function createKommoLead(leadData) {
-  const { nome, email, telefone, origem } = leadData;
+// --- LÓGICA DO KOMMO (CRIAÇÃO DE LEAD ATUALIZADA) ---
+// Agora a função aceita um 'payload' dinâmico, construído pela nova rota
+async function createKommoLead(dynamicPayload) {
   try {
     const accessToken = await getKommoAccessToken();
     const kommoApi = axios.create({
       baseURL: process.env.KOMMO_SUBDOMAIN,
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
     });
-    const tagsParaAdicionar = [];
-    if (origem) {
-      tagsParaAdicionar.push({ name: origem });
-    }
-    const payload = [{
-      name: `Lead de ${nome} - ${email}`,
-      _embedded: {
-        ...(tagsParaAdicionar.length > 0 && { tags: tagsParaAdicionar }),
-        contacts: [{
-          first_name: nome,
-          custom_fields_values: [
-            { field_code: "EMAIL", values: [{ value: email }] },
-            { field_code: "PHONE", values: [{ value: telefone }] }
-          ]
-        }]
-      }
-    }];
-    const response = await kommoApi.post('/api/v4/leads/complex', payload);
-    console.log('Lead complexo (com tags) criado no Kommo:', response.data[0].id);
-    return response.data[0].id;
+
+    // Envia o payload dinâmico que construímos
+    const response = await kommoApi.post('/api/v4/leads/complex', [dynamicPayload]);
+    
+    console.log('Lead complexo (dinâmico) criado no Kommo:', response.data[0].id);
+    return response.data[0]; // Retorna a resposta completa do Kommo
+
   } catch (error) {
     console.error('Erro ao criar lead no Kommo:', error.response ? error.response.data : error.message);
     if (error.response && error.response.status === 401) {
       kommoAccessToken = null; tokenExpiresAt = 0;
       console.log('Token do Kommo invalidado. Será renovado na próxima chamada.');
     }
+    // Lança o erro para que a rota principal possa pegá-lo
+    throw error.response ? error.response.data : new Error('Erro desconhecido no Kommo');
   }
 }
 
-// --- Rotas da API ---
+// --- FUNÇÃO AJUDANTE: PEGAR VALOR ANINHADO ---
+// Pega um valor de um JSON, ex: "user.email" de { user: { email: "..." } }
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((acc, part) => acc && acc[part], obj);
+}
 
+// --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 8 DA API. 🚀');
+  res.send('VERSÃO 9 DA API. Rota Inbound Dinâmica Pronta. 🚀');
 });
 
-// Rota de setup (não muda)
-app.get('/setup-db', async (req, res) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS leads (
-        id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100),
-        telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB,
-        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    res.status(200).send('Tabela "leads" verificada/criada com sucesso!');
-  } catch (error) { console.error('Erro ao criar tabela:', error); res.status(500).send('Erro no servidor ao criar tabela.'); }
-});
+// --- (NOVO!) A "SUPER-ROTA" DE INBOUND ---
+app.post('/inbound/:source_name', async (req, res) => {
+  const { source_name } = req.params;
+  const dadosRecebidos = req.body;
 
-// --- (NOVO!) ROTAS DE CONFIGURAÇÃO DE TOKEN ---
-
-// ROTA 1: Para criar a tabela de configuração (Execute 1 vez)
-app.get('/setup-config-table', async (req, res) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS configuracao (
-        id SERIAL PRIMARY KEY,
-        chave VARCHAR(100) UNIQUE NOT NULL,
-        valor TEXT NOT NULL,
-        atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    res.status(200).send('Tabela "configuracao" verificada/criada com sucesso!');
-  } catch (error) {
-    console.error('Erro ao criar tabela configuracao:', error);
-    res.status(500).send('Erro no servidor ao criar tabela.');
-  }
-});
-
-// ROTA 2: Para salvar o token inicial (Execute 1 vez com Postman)
-app.post('/set-initial-token', async (req, res) => {
-  const { token } = req.body;
-  if (!token) {
-    return res.status(400).send('Token é obrigatório.');
-  }
+  let logId;
+  let sourceId;
 
   try {
-    // Insere ou atualiza o token
+    // 1. Encontrar a Fonte no banco de dados
+    const sourceResult = await pool.query('SELECT id FROM sources WHERE nome = $1', [source_name]);
+    if (sourceResult.rows.length === 0) {
+      console.warn(`Fonte "${source_name}" não encontrada.`);
+      return res.status(404).send({ error: 'Fonte não encontrada.' });
+    }
+    sourceId = sourceResult.rows[0].id;
+
+    // 2. Criar o Log Inicial (estado 'pendente')
+    const logResult = await pool.query(
+      `INSERT INTO request_logs (source_id, estado, dados_recebidos) 
+       VALUES ($1, 'pendente', $2) RETURNING id`,
+      [sourceId, dadosRecebidos]
+    );
+    logId = logResult.rows[0].id;
+    console.log(`[Log ${logId}] Recebido lead da fonte "${source_name}".`);
+
+    // 3. Buscar as Regras de Mapeamento
+    const mappingsResult = await pool.query(
+      'SELECT campo_fonte, tipo_campo_kommo, codigo_campo_kommo FROM field_mappings WHERE source_id = $1',
+      [sourceId]
+    );
+    const regras = mappingsResult.rows;
+    if (regras.length === 0) {
+      console.warn(`[Log ${logId}] Nenhuma regra de mapeamento encontrada para a fonte "${source_name}".`);
+      return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.' });
+    }
+
+    // 4. Construir o Payload Dinâmico do Kommo
+    const payloadKommo = {
+      name: `Lead da Fonte: ${source_name}`, // Nome padrão
+      _embedded: {
+        contacts: [{}],
+        tags: []
+      },
+      custom_fields_values: []
+    };
+
+    const contato = payloadKommo._embedded.contacts[0];
+    
+    for (const regra of regras) {
+      // Pega o valor do JSON que recebemos (ex: "user.email")
+      const valor = getNestedValue(dadosRecebidos, regra.campo_fonte);
+      if (!valor) continue; // Pula se o campo não veio no JSON
+
+      switch (regra.tipo_campo_kommo) {
+        case 'lead_name':
+          payloadKommo.name = valor;
+          break;
+        case 'contact_first_name':
+          contato.first_name = valor;
+          break;
+        case 'contact_custom_field':
+          if (!contato.custom_fields_values) {
+            contato.custom_fields_values = [];
+          }
+          contato.custom_fields_values.push({
+            field_code: regra.codigo_campo_kommo,
+            values: [{ value: valor }]
+          });
+          break;
+        case 'lead_custom_field':
+          payloadKommo.custom_fields_values.push({
+            field_code: regra.codigo_campo_kommo,
+            values: [{ value: valor }]
+          });
+          break;
+        case 'tag':
+          payloadKommo._embedded.tags.push({ name: valor });
+          break;
+      }
+    }
+    
+    // Ajuste final: se o nome do contato não foi mapeado, usa o lead_name
+    if (!contato.first_name && payloadKommo.name) {
+      contato.first_name = payloadKommo.name;
+    }
+
+    // 5. Enviar ao Kommo
+    console.log(`[Log ${logId}] Enviando payload dinâmico para o Kommo...`);
+    const respostaKommo = await createKommoLead(payloadKommo);
+
+    // 6. Atualizar o Log para 'sucesso'
     await pool.query(
-      `INSERT INTO configuracao (chave, valor) 
-       VALUES ('KOMMO_REFRESH_TOKEN', $1)
-       ON CONFLICT (chave) DO UPDATE SET 
-       valor = EXCLUDED.valor, 
-       atualizado_em = CURRENT_TIMESTAMP`,
-      [token]
+      "UPDATE request_logs SET estado = 'sucesso', resposta_kommo = $1 WHERE id = $2",
+      [respostaKommo, logId]
     );
-    res.status(200).send('Refresh Token do Kommo salvo no banco de dados com sucesso!');
+    console.log(`[Log ${logId}] Sucesso. Lead criado no Kommo: ${respostaKommo.id}`);
+    
+    // 7. Responder ao formulário
+    res.status(201).send({ message: 'Lead recebido e processado com sucesso!', logId: logId });
+
   } catch (error) {
-    console.error('Erro ao salvar token inicial:', error);
-    res.status(500).send('Erro no servidor ao salvar token.');
-  }
-});
-// --- (NOVA ROTA DE SETUP) ---
-// ROTA 3: Para criar a tabela de fontes (Execute 1 vez)
-app.get('/setup-sources-table', async (req, res) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS sources (
-        id SERIAL PRIMARY KEY,
-        nome VARCHAR(100) NOT NULL,
-        tipo VARCHAR(50) DEFAULT 'webhook',
-        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    // 7.b Atualizar o Log para 'falha'
+    console.error(`[Log ${logId || 'N/A'}] Falha no processamento:`, error);
+    if (logId) {
+      await pool.query(
+        "UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2",
+        [error, logId]
       );
-    `);
-    // Vamos adicionar um índice para buscas por nome
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_sources_nome ON sources(nome);
-    `);
-    res.status(200).send('Tabela "sources" (fontes) verificada/criada com sucesso!');
-  } catch (error) {
-    console.error('Erro ao criar tabela sources:', error);
-    res.status(500).send('Erro no servidor ao criar tabela.');
-  }
-});
-// --- (NOVA ROTA DE SETUP) ---
-// ROTA 4: Para criar a tabela de logs (Execute 1 vez)
-app.get('/setup-logs-table', async (req, res) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS request_logs (
-        id SERIAL PRIMARY KEY,
-        source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
-        estado VARCHAR(20) DEFAULT 'pendente',
-        dados_recebidos JSONB,
-        resposta_kommo JSONB,
-        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    // Adiciona índices para acelerar as consultas do painel
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_logs_source_id ON request_logs(source_id);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_logs_estado ON request_logs(estado);
-    `);
-    res.status(200).send('Tabela "request_logs" (registros) verificada/criada com sucesso!');
-  } catch (error) {
-    console.error('Erro ao criar tabela request_logs:', error);
-    res.status(500).send('Erro no servidor ao criar tabela.');
+    }
+    res.status(500).send({ error: 'Falha ao processar o lead.', logId: logId });
   }
 });
 
-// --- (NOVA ROTA DE SETUP) ---
-// ROTA 5: Para criar a tabela de mapeamento (Execute 1 vez)
-app.get('/setup-mappings-table', async (req, res) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS field_mappings (
-        id SERIAL PRIMARY KEY,
-        source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,
-        campo_fonte VARCHAR(255) NOT NULL,
-        tipo_campo_kommo VARCHAR(50) NOT NULL,
-        codigo_campo_kommo VARCHAR(255) NOT NULL,
-        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    // Adiciona um índice para buscas rápidas por source_id
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_mappings_source_id ON field_mappings(source_id);
-    `);
-    res.status(200).send('Tabela "field_mappings" (mapeamento) verificada/criada com sucesso!');
-  } catch (error) {
-    console.error('Erro ao criar tabela field_mappings:', error);
-    res.status(500).send('Erro no servidor ao criar tabela.');
-  }
-});
 
-// Rota principal (não muda)
+// --- ROTAS DE SETUP ANTIGAS (Manter por segurança) ---
+app.get('/setup-db', async (req, res) => { /* ...código antigo... */ 
+  try{await pool.query(`CREATE TABLE IF NOT EXISTS leads (id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100), telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "leads" (antiga) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');}
+});
+app.get('/setup-config-table', async (req, res) => { /* ...código antigo... */ 
+  try{await pool.query(`CREATE TABLE IF NOT EXISTS configuracao (id SERIAL PRIMARY KEY, chave VARCHAR(100) UNIQUE NOT NULL, valor TEXT NOT NULL, atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "configuracao" verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');}
+});
+app.post('/set-initial-token', async (req, res) => { /* ...código antigo... */ 
+  const { token } = req.body; if (!token) {return res.status(400).send('Token é obrigatório.');} try {await pool.query(`INSERT INTO configuracao (chave, valor) VALUES ('KOMMO_REFRESH_TOKEN', $1) ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor, atualizado_em = CURRENT_TIMESTAMP`, [token]); res.status(200).send('Refresh Token do Kommo salvo no banco de dados com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');}
+});
+app.get('/setup-sources-table', async (req, res) => { /* ...código antigo... */ 
+  try{await pool.query(`CREATE TABLE IF NOT EXISTS sources (id SERIAL PRIMARY KEY, nome VARCHAR(100) NOT NULL, tipo VARCHAR(50) DEFAULT 'webhook', criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_sources_nome ON sources(nome);`); res.status(200).send('Tabela "sources" (fontes) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');}
+});
+app.get('/setup-logs-table', async (req, res) => { /* ...código antigo... */ 
+  try{await pool.query(`CREATE TABLE IF NOT EXISTS request_logs (id SERIAL PRIMARY KEY, source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL, estado VARCHAR(20) DEFAULT 'pendente', dados_recebidos JSONB, resposta_kommo JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_logs_source_id ON request_logs(source_id);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_logs_estado ON request_logs(estado);`); res.status(200).send('Tabela "request_logs" (registros) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');}
+});
+app.get('/setup-mappings-table', async (req, res) => { /* ...código antigo... */ 
+  try{await pool.query(`CREATE TABLE IF NOT EXISTS field_mappings (id SERIAL PRIMARY KEY, source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE, campo_fonte VARCHAR(255) NOT NULL, tipo_campo_kommo VARCHAR(50) NOT NULL, codigo_campo_kommo VARCHAR(255) NOT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_mappings_source_id ON field_mappings(source_id);`); res.status(200).send('Tabela "field_mappings" (mapeamento) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');}
+});
+// Rota antiga (desativada, mas mantida)
 app.post('/submit-lead', async (req, res) => {
-  const { nome, email } = req.body;
-  if (!nome || !email) {
-    return res.status(400).send('Nome e Email são obrigatórios.');
-  }
-  console.log('Recebendo lead:', nome, email);
-  try {
-    const result = await pool.query(
-      `INSERT INTO leads (nome, email, telefone, origem, dados_formulario) 
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [req.body.nome, req.body.email, req.body.telefone, req.body.origem, req.body]
-    );
-    const novoLeadId = result.rows[0].id;
-    console.log(`Lead #${novoLeadId} salvo no banco.`);
-    createKommoLead(req.body).catch(err => console.error('Falha ao enviar lead para Kommo (em background):', err.message));
-    console.log('TODO: Enviar para API do Notion');
-    res.status(201).json({ 
-      message: 'Lead recebido com sucesso!', 
-      leadId: novoLeadId 
-    });
-  } catch (error) {
-    console.error('Erro ao processar lead (Banco de Dados):', error);
-    res.status(500).send('Erro interno do servidor.');
-  }
+  res.status(410).send("Esta rota está desativada. Use /inbound/:source_name");
 });
 
 // --- Iniciar o Servidor ---
