@@ -12,17 +12,15 @@ const port = process.env.PORT || 8080;
 
 // --- Configuração Essencial (ATUALIZADA) ---
 
-// 1. Configura o CORS (MODO CORRIGIDO PARA PREFLIGHT)
-// Habilita o CORS para todas as rotas e métodos,
-// e responde automaticamente às requisições OPTIONS (preflight)
+// 1. Configura o CORS (MODO CORRIGIDO)
+// Esta linha SOZINHA já cuida das requisições OPTIONS (preflight)
 app.use(cors({
   origin: '*', // Permite qualquer origem. Mude em produção!
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
-  optionsSuccessStatus: 204 // Responde 204 (No Content) para preflights
+  optionsSuccessStatus: 204
 }));
 
-// Garante que as requisições OPTIONS sejam tratadas explicitamente
-app.options('*', cors()); 
+// A linha defeituosa app.options('*', cors()); foi REMOVIDA.
 
 // 2. Configura o Express para ler JSON
 app.use(express.json());
@@ -38,7 +36,7 @@ const pool = new Pool({
   ssl: { ca: caCert }
 });
 
-// --- LÓGICA DO KOMMO (ROTAÇÃO DE TOKEN) ---
+// --- LÓGICA DO KOMMO (ROTAÇÃO DE TOKEN - NÃO MUDA) ---
 let kommoAccessToken = null;
 let tokenExpiresAt = 0;
 async function getRefreshTokenFromDB() {
@@ -84,7 +82,7 @@ async function getKommoAccessToken() {
   }
 }
 
-// --- LÓGICA DO KOMMO (CRIAÇÃO DE LEAD) ---
+// --- LÓGICA DO KOMMO (CRIAÇÃO DE LEAD - NÃO MUDA) ---
 async function createKommoLead(dynamicPayload) {
   try {
     const accessToken = await getKommoAccessToken();
@@ -113,7 +111,7 @@ function getNestedValue(obj, path) {
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 12 DA API. Corrigindo CORS Preflight. 🚀');
+  res.send('VERSÃO 13 DA API. Correção final do CORS. 🚀');
 });
 
 // --- A "SUPER-ROTA" DE INBOUND (ATUALIZADA) ---
