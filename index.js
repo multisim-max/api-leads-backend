@@ -118,7 +118,27 @@ app.get('/api/logs', checkApiKey, async (req, res) => {
     res.status(500).send({ error: 'Erro ao buscar logs.' });
   }
 });
-
+// Rota para BUSCAR os detalhes de UM log específico
+app.get('/api/logs/:id', checkApiKey, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      // Busca todos os campos do log com o ID fornecido
+      `SELECT l.*, s.nome as source_nome 
+       FROM request_logs l
+       LEFT JOIN sources s ON l.source_id = s.id
+       WHERE l.id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).send({ error: 'Log não encontrado.' });
+    }
+    res.status(200).json(result.rows[0]); // Retorna o objeto completo do log
+  } catch (error) {
+    console.error(`Erro ao buscar log ${id}:`, error);
+    res.status(500).send({ error: 'Erro ao buscar detalhes do log.' });
+  }
+});
 // Rota para CRIAR uma nova fonte (protegida)
 app.post('/api/sources', checkApiKey, async (req, res) => {
   const { nome, tipo = 'webhook' } = req.body; if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });} try { const result = await pool.query('INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *', [nome, tipo]); res.status(201).json(result.rows[0]); } catch (error) { console.error('Erro ao criar source:', error); res.status(500).send({ error: 'Erro ao criar fonte.' }); }
