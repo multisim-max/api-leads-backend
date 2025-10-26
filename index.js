@@ -13,17 +13,20 @@ const port = process.env.PORT || 8080;
 // --- Configuração Essencial (ATUALIZADA) ---
 
 // 1. Configura o CORS (MODO SEGURO)
-// Lista de domínios que podem acessar sua API
+// Adicionamos suas novas URLs do painel admin à lista
 const whitelist = [
   'https://www.bairrocostaverde.com.br', // Seu site de formulário
   'http://localhost:3000',             // Para desenvolvimento do seu widget
-  'https://seu-widget.vercel.app'      // Mude isso para a URL do seu widget
+  'https://asn-asmin-widget.vercel.app', // <-- SUA URL NOVA
+  'https://v0-admin-page-design-dexvkykcb-multisim.vercel.app' // <-- SUA OUTRA URL NOVA
 ];
 const corsOptions = {
   origin: function (origin, callback) {
+    // Permite apps da lista, apps sem origem (ex: Postman) e o mesmo domínio
     if (whitelist.indexOf(origin) !== -1 || !origin) {
       callback(null, true);
     } else {
+      console.warn(`Origem não permitida pelo CORS: ${origin}`);
       callback(new Error('Não permitido pelo CORS'));
     }
   },
@@ -33,7 +36,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// --- (NOVO!) Middleware de Segurança para a API de Admin ---
+// --- Middleware de Segurança para a API de Admin ---
 const checkApiKey = (req, res, next) => {
   const apiKey = req.headers['authorization']; // Espera: "Authorization: Bearer sk_live_..."
   const secret = process.env.ADMIN_API_KEY;
@@ -64,7 +67,7 @@ function getNestedValue(obj, path) { if (!path || !obj) return null; return path
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 14 DA API. Admin API Segura + Rotas GET. 🚀');
+  res.send('VERSÃO 15 DA API. Whitelist do Painel Admin atualizada. 🚀');
 });
 
 // --- A "SUPER-ROTA" DE INBOUND (PÚBLICA - NÃO MUDA) ---
@@ -72,86 +75,29 @@ app.post('/inbound/:source_name', async (req, res) => { /* ...código da V11... 
   const { source_name } = req.params; const dadosRecebidos = req.body; let logId; let sourceId; try { const sourceResult = await pool.query('SELECT id FROM sources WHERE nome = $1', [source_name]); if (sourceResult.rows.length === 0) { console.warn(`Fonte "${source_name}" não encontrada.`); return res.status(404).send({ error: 'Fonte não encontrada.' }); } sourceId = sourceResult.rows[0].id; const logResult = await pool.query(`INSERT INTO request_logs (source_id, estado, dados_recebidos) VALUES ($1, 'pendente', $2) RETURNING id`, [sourceId, dadosRecebidos]); logId = logResult.rows[0].id; console.log(`[Log ${logId}] Recebido lead da fonte "${source_name}".`); const mappingsResult = await pool.query('SELECT campo_fonte, tipo_campo_kommo, codigo_campo_kommo FROM field_mappings WHERE source_id = $1', [sourceId]); const regras = mappingsResult.rows; if (regras.length === 0) { console.warn(`[Log ${logId}] Nenhuma regra de mapeamento encontrada...`); await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [{error: "Nenhuma regra de mapeamento configurada."}, logId]); return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.', logId: logId }); } const payloadKommo = {}; const contato = {}; const embedded = {}; const leadCustomFields = []; const contactCustomFields = []; const tags = []; for (const regra of regras) { const valor = getNestedValue(dadosRecebidos, regra.campo_fonte); if (!valor) continue; switch (regra.tipo_campo_kommo) { case 'lead_name': payloadKommo.name = valor; break; case 'contact_first_name': contato.first_name = valor; break; case 'contact_custom_field': contactCustomFields.push({ field_code: regra.codigo_campo_kommo, values: [{ value: valor }] }); break; case 'lead_custom_field': leadCustomFields.push({ field_code: regra.codigo_campo_kommo, values: [{ value: valor }] }); break; case 'tag': tags.push({ name: valor }); break; } } if (!payloadKommo.name) { payloadKommo.name = `Lead da Fonte: ${source_name}`; } if (!contato.first_name) { contato.first_name = payloadKommo.name; } embedded.contacts = [contato]; if (contactCustomFields.length > 0) { contato.custom_fields_values = contactCustomFields; } if (leadCustomFields.length > 0) { payloadKommo.custom_fields_values = leadCustomFields; } if (tags.length > 0) { embedded.tags = tags; } payloadKommo._embedded = embedded; console.log(`[Log ${logId}] Enviando payload dinâmico para o Kommo...`); const respostaKommo = await createKommoLead(payloadKommo); await pool.query("UPDATE request_logs SET estado = 'sucesso', resposta_kommo = $1 WHERE id = $2", [respostaKommo, logId]); console.log(`[Log ${logId}] Sucesso. Lead criado no Kommo: ${respostaKommo.id}`); res.status(201).send({ message: 'Lead recebido e processado com sucesso!', logId: logId }); } catch (error) { const errorDetails = error.response ? error.response.data : { message: error.message }; console.error(`[Log ${logId || 'N/A'}] Falha no processamento:`, JSON.stringify(errorDetails)); if (logId) { await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [errorDetails, logId]); } res.status(500).send({ error: 'Falha ao processar o lead.', logId: logId }); }
 });
 
-// --- (NOVO!) ROTAS DA API DE ADMIN (PROTEGIDAS) ---
-
-// Rota para LISTAR todas as fontes
+// --- ROTAS DA API DE ADMIN (PROTEGIDAS - NÃO MUDAM) ---
 app.get('/api/sources', checkApiKey, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM sources ORDER BY nome');
     res.status(200).json(result.rows);
-  } catch (error) {
-    console.error('Erro ao buscar sources:', error);
-    res.status(500).send({ error: 'Erro ao buscar fontes.' });
-  }
+  } catch (error) { console.error('Erro ao buscar sources:', error); res.status(500).send({ error: 'Erro ao buscar fontes.' }); }
 });
-
-// Rota para LISTAR os mapeamentos de UMA fonte
 app.get('/api/mappings/:source_id', checkApiKey, async (req, res) => {
   const { source_id } = req.params;
   try {
-    const result = await pool.query(
-      'SELECT * FROM field_mappings WHERE source_id = $1',
-      [source_id]
-    );
+    const result = await pool.query('SELECT * FROM field_mappings WHERE source_id = $1', [source_id]);
     res.status(200).json(result.rows);
-  } catch (error) {
-    console.error('Erro ao buscar mappings:', error);
-    res.status(500).send({ error: 'Erro ao buscar mapeamentos.' });
-  }
+  } catch (error) { console.error('Erro ao buscar mappings:', error); res.status(500).send({ error: 'Erro ao buscar mapeamentos.' }); }
 });
-
-// Rota para CRIAR uma nova fonte (protegida)
 app.post('/api/sources', checkApiKey, async (req, res) => {
-  const { nome, tipo = 'webhook' } = req.body;
-  if (!nome) {
-    return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });
-  }
-  try {
-    const result = await pool.query(
-      'INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *',
-      [nome, tipo]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error('Erro ao criar source:', error);
-    res.status(500).send({ error: 'Erro ao criar fonte.' });
-  }
+  const { nome, tipo = 'webhook' } = req.body; if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });} try { const result = await pool.query('INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *', [nome, tipo]); res.status(201).json(result.rows[0]); } catch (error) { console.error('Erro ao criar source:', error); res.status(500).send({ error: 'Erro ao criar fonte.' }); }
 });
-
-// Rota para ATUALIZAR os mapeamentos (protegida)
 app.post('/api/mappings', checkApiKey, async (req, res) => {
-  const { source_id, mappings } = req.body;
-  if (!source_id || !mappings || !Array.isArray(mappings)) {
-    return res.status(400).send({ error: 'Estrutura de dados inválida.' });
-  }
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    // Limpa os mapeamentos antigos
-    await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]);
-    // Insere os novos
-    for (const rule of mappings) {
-      if (rule.campo_fonte && rule.tipo_campo_kommo && rule.codigo_campo_kommo) {
-        await client.query(
-          `INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo)
-           VALUES ($1, $2, $3, $4)`,
-          [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]
-        );
-      }
-    }
-    await client.query('COMMIT');
-    res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Erro ao salvar mapeamentos:', error);
-    res.status(500).send({ error: 'Erro ao salvar mapeamentos.' });
-  } finally {
-    client.release();
-  }
+  const { source_id, mappings } = req.body; if (!source_id || !mappings || !Array.isArray(mappings)) { return res.status(400).send({ error: 'Estrutura de dados inválida.' }); } const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]); for (const rule of mappings) { if (rule.campo_fonte && rule.tipo_campo_kommo && rule.codigo_campo_kommo) { await client.query(`INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo) VALUES ($1, $2, $3, $4)`, [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]); } } await client.query('COMMIT'); res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' }); } catch (error) { await client.query('ROLLBACK'); console.error('Erro ao salvar mapeamentos:', error); res.status(500).send({ error: 'Erro ao salvar mapeamentos.' }); } finally { client.release(); }
 });
 
 // --- ROTAS DE SETUP ANTIGAS (Manter por segurança) ---
-// (Sem mudanças aqui... /setup-db, /setup-config-table, etc.)
+// (Sem mudanças)
 app.get('/setup-db', async (req, res) => { /* ...código antigo... */ try{await pool.query(`CREATE TABLE IF NOT EXISTS leads (id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100), telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "leads" (antiga) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-config-table', async (req, res) => { /* ...código antigo... */ try{await pool.query(`CREATE TABLE IF NOT EXISTS configuracao (id SERIAL PRIMARY KEY, chave VARCHAR(100) UNIQUE NOT NULL, valor TEXT NOT NULL, atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "configuracao" verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.post('/set-initial-token', async (req, res) => { /* ...código antigo... */ const { token } = req.body; if (!token) {return res.status(400).send('Token é obrigatório.');} try {await pool.query(`INSERT INTO configuracao (chave, valor) VALUES ('KOMMO_REFRESH_TOKEN', $1) ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor, atualizado_em = CURRENT_TIMESTAMP`, [token]); res.status(200).send('Refresh Token do Kommo salvo no banco de dados com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
