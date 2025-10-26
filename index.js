@@ -14,7 +14,7 @@ const port = process.env.PORT || 8080;
 const whitelist = [
   'https://www.bairrocostaverde.com.br',
   'http://localhost:3000',
-  'https://asn-asmin-widget.vercel.app',
+  'https://asn-asmin-widget.vercel.app', // <-- Corrigido (era 'asn-asmin')
   'https://v0-admin-page-design-dexvkykcb-multisim.vercel.app'
 ];
 const corsOptions = {
@@ -60,96 +60,92 @@ function getNestedValue(obj, path) { if (!path || !obj) return null; return path
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 17 DA API. Correção SyntaxError GET Logs. 🚀');
+  res.send('VERSÃO 19 DA API. Adiciona tag fixa "Wesley". 🚀');
 });
 
-// --- A "SUPER-ROTA" DE INBOUND (PÚBLICA - NÃO MUDA) ---
-app.post('/inbound/:source_name', async (req, res) => { /* ...código da V11... */ 
-  const { source_name } = req.params; const dadosRecebidos = req.body; let logId; let sourceId; try { const sourceResult = await pool.query('SELECT id FROM sources WHERE nome = $1', [source_name]); if (sourceResult.rows.length === 0) { console.warn(`Fonte "${source_name}" não encontrada.`); return res.status(404).send({ error: 'Fonte não encontrada.' }); } sourceId = sourceResult.rows[0].id; const logResult = await pool.query(`INSERT INTO request_logs (source_id, estado, dados_recebidos) VALUES ($1, 'pendente', $2) RETURNING id`, [sourceId, dadosRecebidos]); logId = logResult.rows[0].id; console.log(`[Log ${logId}] Recebido lead da fonte "${source_name}".`); const mappingsResult = await pool.query('SELECT campo_fonte, tipo_campo_kommo, codigo_campo_kommo FROM field_mappings WHERE source_id = $1', [sourceId]); const regras = mappingsResult.rows; if (regras.length === 0) { console.warn(`[Log ${logId}] Nenhuma regra de mapeamento encontrada...`); await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [{error: "Nenhuma regra de mapeamento configurada."}, logId]); return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.', logId: logId }); } const payloadKommo = {}; const contato = {}; const embedded = {}; const leadCustomFields = []; const contactCustomFields = []; const tags = []; for (const regra of regras) { const valor = getNestedValue(dadosRecebidos, regra.campo_fonte); if (!valor) continue; switch (regra.tipo_campo_kommo) { case 'lead_name': payloadKommo.name = valor; break; case 'contact_first_name': contato.first_name = valor; break; case 'contact_custom_field': contactCustomFields.push({ field_code: regra.codigo_campo_kommo, values: [{ value: valor }] }); break; case 'lead_custom_field': leadCustomFields.push({ field_code: regra.codigo_campo_kommo, values: [{ value: valor }] }); break; case 'tag': tags.push({ name: valor }); break; } } if (!payloadKommo.name) { payloadKommo.name = `Lead da Fonte: ${source_name}`; } if (!contato.first_name) { contato.first_name = payloadKommo.name; } embedded.contacts = [contato]; if (contactCustomFields.length > 0) { contato.custom_fields_values = contactCustomFields; } if (leadCustomFields.length > 0) { payloadKommo.custom_fields_values = leadCustomFields; } if (tags.length > 0) { embedded.tags = tags; } payloadKommo._embedded = embedded; console.log(`[Log ${logId}] Enviando payload dinâmico para o Kommo...`); const respostaKommo = await createKommoLead(payloadKommo); await pool.query("UPDATE request_logs SET estado = 'sucesso', resposta_kommo = $1 WHERE id = $2", [respostaKommo, logId]); console.log(`[Log ${logId}] Sucesso. Lead criado no Kommo: ${respostaKommo.id}`); res.status(201).send({ message: 'Lead recebido e processado com sucesso!', logId: logId }); } catch (error) { const errorDetails = error.response ? error.response.data : { message: error.message }; console.error(`[Log ${logId || 'N/A'}] Falha no processamento:`, JSON.stringify(errorDetails)); if (logId) { await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [errorDetails, logId]); } res.status(500).send({ error: 'Falha ao processar o lead.', logId: logId }); }
-});
-
-// --- ROTAS DA API DE ADMIN (PROTEGIDAS) ---
-
-// Rota para LISTAR todas as fontes
-app.get('/api/sources', checkApiKey, async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM sources ORDER BY nome');
-    res.status(200).json(result.rows);
-  } catch (error) { console.error('Erro ao buscar sources:', error); res.status(500).send({ error: 'Erro ao buscar fontes.' }); }
-});
-
-// Rota para LISTAR os mapeamentos de UMA fonte
-app.get('/api/mappings/:source_id', checkApiKey, async (req, res) => {
-  const { source_id } = req.params;
-  try {
-    const result = await pool.query('SELECT * FROM field_mappings WHERE source_id = $1', [source_id]);
-    res.status(200).json(result.rows);
-  } catch (error) { console.error('Erro ao buscar mappings:', error); res.status(500).send({ error: 'Erro ao buscar mapeamentos.' }); }
-});
-
-// Rota para LISTAR os logs (com paginação simples) - CORRIGIDA
-app.get('/api/logs', checkApiKey, async (req, res) => {
-  // CORREÇÃO: Removemos o 'as string' que causava o SyntaxError
-  const page = parseInt(req.query.page) || 1; 
-  const limit = parseInt(req.query.limit) || 20; 
-  const offset = (page - 1) * limit;
+// --- A "SUPER-ROTA" DE INBOUND (PÚBLICA - ATUALIZADA) ---
+app.post('/inbound/:source_name', async (req, res) => {
+  const { source_name } = req.params;
+  const dadosRecebidos = req.body;
+  let logId;
+  let sourceId;
 
   try {
-    const logsResult = await pool.query(
-      `SELECT l.id, l.estado, l.criado_em, s.nome as source_nome, l.dados_recebidos 
-       FROM request_logs l
-       LEFT JOIN sources s ON l.source_id = s.id
-       ORDER BY l.criado_em DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    );
-    const totalResult = await pool.query('SELECT COUNT(*) FROM request_logs');
-    const totalLogs = parseInt(totalResult.rows[0].count);
+    // 1. Encontrar a Fonte
+    const sourceResult = await pool.query('SELECT id FROM sources WHERE nome = $1', [source_name]);
+    if (sourceResult.rows.length === 0) { console.warn(`Fonte "${source_name}" não encontrada.`); return res.status(404).send({ error: 'Fonte não encontrada.' }); }
+    sourceId = sourceResult.rows[0].id;
 
-    res.status(200).json({
-      logs: logsResult.rows,
-      total: totalLogs,
-      page: page,
-      limit: limit,
-      totalPages: Math.ceil(totalLogs / limit)
-    });
-  } catch (error) {
-    console.error('Erro ao buscar logs:', error);
-    res.status(500).send({ error: 'Erro ao buscar logs.' });
-  }
-});
-// Rota para BUSCAR os detalhes de UM log específico
-app.get('/api/logs/:id', checkApiKey, async (req, res) => {
-  const { id } = req.params;
-  try {
-    const result = await pool.query(
-      // Busca todos os campos do log com o ID fornecido
-      `SELECT l.*, s.nome as source_nome 
-       FROM request_logs l
-       LEFT JOIN sources s ON l.source_id = s.id
-       WHERE l.id = $1`,
-      [id]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).send({ error: 'Log não encontrado.' });
+    // 2. Criar o Log Inicial
+    const logResult = await pool.query(`INSERT INTO request_logs (source_id, estado, dados_recebidos) VALUES ($1, 'pendente', $2) RETURNING id`, [sourceId, dadosRecebidos]);
+    logId = logResult.rows[0].id;
+    console.log(`[Log ${logId}] Recebido lead da fonte "${source_name}".`);
+
+    // 3. Buscar as Regras de Mapeamento
+    const mappingsResult = await pool.query('SELECT campo_fonte, tipo_campo_kommo, codigo_campo_kommo FROM field_mappings WHERE source_id = $1', [sourceId]);
+    const regras = mappingsResult.rows;
+    if (regras.length === 0) { console.warn(`[Log ${logId}] Nenhuma regra de mapeamento encontrada...`); await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [{error: "Nenhuma regra de mapeamento configurada."}, logId]); return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.', logId: logId }); }
+    
+    // 4. Construir o Payload Dinâmico
+    const payloadKommo = {}; const contato = {}; const embedded = {};
+    const leadCustomFields = []; const contactCustomFields = []; const tags = [];
+
+    for (const regra of regras) {
+      const valor = getNestedValue(dadosRecebidos, regra.campo_fonte);
+      if (!valor) continue;
+      switch (regra.tipo_campo_kommo) {
+        case 'lead_name': payloadKommo.name = valor; break;
+        case 'contact_first_name': contato.first_name = valor; break;
+        case 'contact_custom_field': contactCustomFields.push({ field_code: regra.codigo_campo_kommo, values: [{ value: valor }] }); break;
+        case 'lead_custom_field': leadCustomFields.push({ field_code: regra.codigo_campo_kommo, values: [{ value: valor }] }); break;
+        case 'tag': tags.push({ name: valor }); break;
+      }
     }
-    res.status(200).json(result.rows[0]); // Retorna o objeto completo do log
+    
+    // 5. Montar o Payload Final (COM A TAG FIXA "Wesley")
+    if (!payloadKommo.name) { payloadKommo.name = `Lead da Fonte: ${source_name}`; }
+    if (!contato.first_name) { contato.first_name = payloadKommo.name; }
+    if (contactCustomFields.length > 0) { contato.custom_fields_values = contactCustomFields; }
+    
+    // --- LÓGICA DA TAG FIXA ---
+    const tagWesleyExiste = tags.some(tag => tag.name === 'Wesley');
+    if (!tagWesleyExiste) {
+      tags.push({ name: 'Wesley' }); // Adiciona a tag "Wesley"
+    }
+    // --- FIM DA LÓGICA ---
+
+    embedded.contacts = [contato];
+    if (leadCustomFields.length > 0) { payloadKommo.custom_fields_values = leadCustomFields; }
+    if (tags.length > 0) { embedded.tags = tags; }
+    if (Object.keys(embedded).length > 0) { payloadKommo._embedded = embedded; }
+
+    // 6. Enviar ao Kommo
+    console.log(`[Log ${logId}] Enviando payload dinâmico para o Kommo...`);
+    const respostaKommo = await createKommoLead(payloadKommo);
+
+    // 7. Atualizar o Log para 'sucesso'
+    await pool.query("UPDATE request_logs SET estado = 'sucesso', resposta_kommo = $1 WHERE id = $2", [respostaKommo, logId]);
+    console.log(`[Log ${logId}] Sucesso. Lead criado no Kommo: ${respostaKommo.id}`);
+    res.status(201).send({ message: 'Lead recebido e processado com sucesso!', logId: logId });
+
   } catch (error) {
-    console.error(`Erro ao buscar log ${id}:`, error);
-    res.status(500).send({ error: 'Erro ao buscar detalhes do log.' });
+    // 8. Atualizar o Log para 'falha'
+    const errorDetails = error.response ? error.response.data : { message: error.message };
+    console.error(`[Log ${logId || 'N/A'}] Falha no processamento:`, JSON.stringify(errorDetails));
+    if (logId) { await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [errorDetails, logId]); }
+    res.status(500).send({ error: 'Falha ao processar o lead.', logId: logId });
   }
 });
-// Rota para CRIAR uma nova fonte (protegida)
-app.post('/api/sources', checkApiKey, async (req, res) => {
-  const { nome, tipo = 'webhook' } = req.body; if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });} try { const result = await pool.query('INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *', [nome, tipo]); res.status(201).json(result.rows[0]); } catch (error) { console.error('Erro ao criar source:', error); res.status(500).send({ error: 'Erro ao criar fonte.' }); }
-});
 
-// Rota para ATUALIZAR os mapeamentos (protegida)
-app.post('/api/mappings', checkApiKey, async (req, res) => {
-  const { source_id, mappings } = req.body; if (!source_id || !mappings || !Array.isArray(mappings)) { return res.status(400).send({ error: 'Estrutura de dados inválida.' }); } const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]); for (const rule of mappings) { if (rule.campo_fonte && rule.tipo_campo_kommo && rule.codigo_campo_kommo) { await client.query(`INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo) VALUES ($1, $2, $3, $4)`, [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]); } } await client.query('COMMIT'); res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' }); } catch (error) { await client.query('ROLLBACK'); console.error('Erro ao salvar mapeamentos:', error); res.status(500).send({ error: 'Erro ao salvar mapeamentos.' }); } finally { client.release(); }
-});
+// --- ROTAS DA API DE ADMIN (PROTEGIDAS - NÃO MUDAM) ---
+app.get('/api/sources', checkApiKey, async (req, res) => { try { const result = await pool.query('SELECT * FROM sources ORDER BY nome'); res.status(200).json(result.rows); } catch (error) { console.error('Erro ao buscar sources:', error); res.status(500).send({ error: 'Erro ao buscar fontes.' }); } });
+app.get('/api/mappings/:source_id', checkApiKey, async (req, res) => { const { source_id } = req.params; try { const result = await pool.query('SELECT * FROM field_mappings WHERE source_id = $1', [source_id]); res.status(200).json(result.rows); } catch (error) { console.error('Erro ao buscar mappings:', error); res.status(500).send({ error: 'Erro ao buscar mapeamentos.' }); } });
+app.get('/api/logs', checkApiKey, async (req, res) => { const page = parseInt(req.query.page) || 1; const limit = parseInt(req.query.limit) || 20; const offset = (page - 1) * limit; try { const logsResult = await pool.query(`SELECT l.id, l.estado, l.criado_em, s.nome as source_nome, l.dados_recebidos FROM request_logs l LEFT JOIN sources s ON l.source_id = s.id ORDER BY l.criado_em DESC LIMIT $1 OFFSET $2`, [limit, offset]); const totalResult = await pool.query('SELECT COUNT(*) FROM request_logs'); const totalLogs = parseInt(totalResult.rows[0].count); res.status(200).json({ logs: logsResult.rows, total: totalLogs, page: page, limit: limit, totalPages: Math.ceil(totalLogs / limit) }); } catch (error) { console.error('Erro ao buscar logs:', error); res.status(500).send({ error: 'Erro ao buscar logs.' }); } });
+app.get('/api/logs/:id', checkApiKey, async (req, res) => { const { id } = req.params; try { const result = await pool.query(`SELECT l.*, s.nome as source_nome FROM request_logs l LEFT JOIN sources s ON l.source_id = s.id WHERE l.id = $1`, [id]); if (result.rows.length === 0) { return res.status(404).send({ error: 'Log não encontrado.' }); } res.status(200).json(result.rows[0]); } catch (error) { console.error(`Erro ao buscar log ${id}:`, error); res.status(500).send({ error: 'Erro ao buscar detalhes do log.' }); } });
+app.post('/api/sources', checkApiKey, async (req, res) => { const { nome, tipo = 'webhook' } = req.body; if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });} try { const result = await pool.query('INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *', [nome, tipo]); res.status(201).json(result.rows[0]); } catch (error) { console.error('Erro ao criar source:', error); res.status(500).send({ error: 'Erro ao criar fonte.' }); } });
+app.post('/api/mappings', checkApiKey, async (req, res) => { const { source_id, mappings } = req.body; if (!source_id || !mappings || !Array.isArray(mappings)) { return res.status(400).send({ error: 'Estrutura de dados inválida.' }); } const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]); for (const rule of mappings) { if (rule.campo_fonte && rule.tipo_campo_kommo && rule.codigo_campo_kommo) { await client.query(`INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo) VALUES ($1, $2, $3, $4)`, [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]); } } await client.query('COMMIT'); res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' }); } catch (error) { await client.query('ROLLBACK'); console.error('Erro ao salvar mapeamentos:', error); res.status(500).send({ error: 'Erro ao salvar mapeamentos.' }); } finally { client.release(); } });
 
-// --- ROTAS DE SETUP ANTIGAS (Manter por segurança) ---
+// --- ROTAS DE SETUP ANTIGAS ---
 // (Sem mudanças)
 app.get('/setup-db', async (req, res) => { /* ...código antigo... */ try{await pool.query(`CREATE TABLE IF NOT EXISTS leads (id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100), telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "leads" (antiga) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-config-table', async (req, res) => { /* ...código antigo... */ try{await pool.query(`CREATE TABLE IF NOT EXISTS configuracao (id SERIAL PRIMARY KEY, chave VARCHAR(100) UNIQUE NOT NULL, valor TEXT NOT NULL, atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "configuracao" verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
