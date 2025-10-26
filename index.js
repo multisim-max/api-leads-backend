@@ -95,7 +95,41 @@ app.post('/api/sources', checkApiKey, async (req, res) => {
 app.post('/api/mappings', checkApiKey, async (req, res) => {
   const { source_id, mappings } = req.body; if (!source_id || !mappings || !Array.isArray(mappings)) { return res.status(400).send({ error: 'Estrutura de dados inválida.' }); } const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]); for (const rule of mappings) { if (rule.campo_fonte && rule.tipo_campo_kommo && rule.codigo_campo_kommo) { await client.query(`INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo) VALUES ($1, $2, $3, $4)`, [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]); } } await client.query('COMMIT'); res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' }); } catch (error) { await client.query('ROLLBACK'); console.error('Erro ao salvar mapeamentos:', error); res.status(500).send({ error: 'Erro ao salvar mapeamentos.' }); } finally { client.release(); }
 });
+// Rota para LISTAR os logs (com paginação simples)
+app.get('/api/logs', checkApiKey, async (req, res) => {
+  // Pega parâmetros da query string (ex: /api/logs?page=1&limit=20)
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+  const offset = (page - 1) * limit;
+  // TODO: Adicionar filtros por source_id, estado, etc. se necessário
 
+  try {
+    // Busca os logs mais recentes primeiro, com limite e offset
+    const logsResult = await pool.query(
+      `SELECT l.id, l.estado, l.criado_em, s.nome as source_nome, l.dados_recebidos 
+       FROM request_logs l
+       LEFT JOIN sources s ON l.source_id = s.id
+       ORDER BY l.criado_em DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+
+    // Conta o total de logs (para paginação no frontend)
+    const totalResult = await pool.query('SELECT COUNT(*) FROM request_logs');
+    const totalLogs = parseInt(totalResult.rows[0].count);
+
+    res.status(200).json({
+      logs: logsResult.rows,
+      total: totalLogs,
+      page: page,
+      limit: limit,
+      totalPages: Math.ceil(totalLogs / limit)
+    });
+  } catch (error) {
+    console.error('Erro ao buscar logs:', error);
+    res.status(500).send({ error: 'Erro ao buscar logs.' });
+  }
+});
 // --- ROTAS DE SETUP ANTIGAS (Manter por segurança) ---
 // (Sem mudanças)
 app.get('/setup-db', async (req, res) => { /* ...código antigo... */ try{await pool.query(`CREATE TABLE IF NOT EXISTS leads (id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100), telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "leads" (antiga) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
