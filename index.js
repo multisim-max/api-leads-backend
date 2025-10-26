@@ -3,15 +3,28 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
+const cors = require('cors'); // <-- Importamos o CORS
 const { Pool } = require('pg');
 const axios = require('axios');
 
 const app = express();
 const port = process.env.PORT || 8080;
 
-// --- Configuração Essencial ---
-app.use(cors({ origin: ['*', '*'] }));
+// --- Configuração Essencial (ATUALIZADA) ---
+
+// 1. Configura o CORS (MODO CORRIGIDO PARA PREFLIGHT)
+// Habilita o CORS para todas as rotas e métodos,
+// e responde automaticamente às requisições OPTIONS (preflight)
+app.use(cors({
+  origin: '*', // Permite qualquer origem. Mude em produção!
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
+  optionsSuccessStatus: 204 // Responde 204 (No Content) para preflights
+}));
+
+// Garante que as requisições OPTIONS sejam tratadas explicitamente
+app.options('*', cors()); 
+
+// 2. Configura o Express para ler JSON
 app.use(express.json());
 
 // --- Configuração do Banco de Dados ---
@@ -25,7 +38,7 @@ const pool = new Pool({
   ssl: { ca: caCert }
 });
 
-// --- LÓGICA DO KOMMO (ROTAÇÃO DE TOKEN - NÃO MUDA) ---
+// --- LÓGICA DO KOMMO (ROTAÇÃO DE TOKEN) ---
 let kommoAccessToken = null;
 let tokenExpiresAt = 0;
 async function getRefreshTokenFromDB() {
@@ -71,7 +84,7 @@ async function getKommoAccessToken() {
   }
 }
 
-// --- LÓGICA DO KOMMO (CRIAÇÃO DE LEAD - NÃO MUDA) ---
+// --- LÓGICA DO KOMMO (CRIAÇÃO DE LEAD) ---
 async function createKommoLead(dynamicPayload) {
   try {
     const accessToken = await getKommoAccessToken();
@@ -83,7 +96,6 @@ async function createKommoLead(dynamicPayload) {
     console.log('Lead complexo (dinâmico) criado no Kommo:', response.data[0].id);
     return response.data[0];
   } catch (error) {
-    // Adiciona log detalhado do erro de validação
     console.error('Erro ao criar lead no Kommo (createKommoLead):', error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
     if (error.response && error.response.status === 401) {
       kommoAccessToken = null; tokenExpiresAt = 0;
@@ -101,7 +113,7 @@ function getNestedValue(obj, path) {
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 11 DA API. Corrigindo Payload Builder. 🚀');
+  res.send('VERSÃO 12 DA API. Corrigindo CORS Preflight. 🚀');
 });
 
 // --- A "SUPER-ROTA" DE INBOUND (ATUALIZADA) ---
@@ -140,20 +152,18 @@ app.post('/inbound/:source_name', async (req, res) => {
       await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [{error: "Nenhuma regra de mapeamento configurada."}, logId]);
       return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.', logId: logId });
     }
-
-    // --- (NOVA LÓGICA) ---
-    // 4. Construir o Payload Dinâmico (de forma mais segura)
     
-    const payloadKommo = {}; // Começa vazio
+    // 4. Construir o Payload Dinâmico
+    const payloadKommo = {};
     const contato = {};
-    const embedded = {}; // Começa vazio
+    const embedded = {};
     const leadCustomFields = [];
     const contactCustomFields = [];
     const tags = [];
 
     for (const regra of regras) {
       const valor = getNestedValue(dadosRecebidos, regra.campo_fonte);
-      if (!valor) continue; // Pula se o campo não veio no JSON
+      if (!valor) continue; 
 
       switch (regra.tipo_campo_kommo) {
         case 'lead_name':
@@ -180,40 +190,29 @@ app.post('/inbound/:source_name', async (req, res) => {
       }
     }
     
-    // 5. Montar o Payload Final (só com dados que existem)
-    
-    // Nome do Lead (obrigatório)
+    // 5. Montar o Payload Final
     if (!payloadKommo.name) {
       payloadKommo.name = `Lead da Fonte: ${source_name}`;
     }
-
-    // Nome do Contato (obrigatório)
     if (!contato.first_name) {
       contato.first_name = payloadKommo.name;
     }
-    embedded.contacts = [contato]; // Adiciona o contato
+    embedded.contacts = [contato]; 
 
-    // Adiciona campos customizados de contato se existirem
     if (contactCustomFields.length > 0) {
       contato.custom_fields_values = contactCustomFields;
     }
-
-    // Adiciona campos customizados de lead se existirem
     if (leadCustomFields.length > 0) {
       payloadKommo.custom_fields_values = leadCustomFields;
     }
-
-    // Adiciona tags se existirem
     if (tags.length > 0) {
       embedded.tags = tags;
     }
-
-    // Anexa o _embedded (que agora contém contacts e talvez tags)
     payloadKommo._embedded = embedded;
 
     // 6. Enviar ao Kommo
     console.log(`[Log ${logId}] Enviando payload dinâmico para o Kommo...`);
-    console.log(JSON.stringify(payloadKommo, null, 2)); // Log para vermos o payload
+    // console.log(JSON.stringify(payloadKommo, null, 2)); // Descomente para debug
     
     const respostaKommo = await createKommoLead(payloadKommo);
 
@@ -242,12 +241,8 @@ app.post('/inbound/:source_name', async (req, res) => {
 
 
 // --- ROTAS DE ADMIN (NÃO MUDAM) ---
-app.post('/api/sources', async (req, res) => { /* ...código antigo... */ 
-  const { nome, tipo = 'webhook' } = req.body; if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });} try { const result = await pool.query('INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *', [nome, tipo]); res.status(201).json(result.rows[0]); } catch (error) { console.error('Erro ao criar source:', error); res.status(500).send({ error: 'Erro ao criar fonte.' }); }
-});
-app.post('/api/mappings', async (req, res) => { /* ...código antigo... */ 
-  const { source_id, mappings } = req.body; if (!source_id || !mappings || !Array.isArray(mappings)) { return res.status(400).send({ error: 'Estrutura de dados inválida.' }); } const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]); for (const rule of mappings) { await client.query(`INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo) VALUES ($1, $2, $3, $4)`, [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]); } await client.query('COMMIT'); res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' }); } catch (error) { await client.query('ROLLBACK'); console.error('Erro ao salvar mapeamentos:', error); res.status(500).send({ error: 'Erro ao salvar mapeamentos.' }); } finally { client.release(); }
-});
+app.post('/api/sources', async (req, res) => { /* ...código antigo... */ const { nome, tipo = 'webhook' } = req.body; if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });} try { const result = await pool.query('INSERT INTO sources (nome, tipo) VALUES ($1, $2) RETURNING *', [nome, tipo]); res.status(201).json(result.rows[0]); } catch (error) { console.error('Erro ao criar source:', error); res.status(500).send({ error: 'Erro ao criar fonte.' }); } });
+app.post('/api/mappings', async (req, res) => { /* ...código antigo... */ const { source_id, mappings } = req.body; if (!source_id || !mappings || !Array.isArray(mappings)) { return res.status(400).send({ error: 'Estrutura de dados inválida.' }); } const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM field_mappings WHERE source_id = $1', [source_id]); for (const rule of mappings) { await client.query(`INSERT INTO field_mappings (source_id, campo_fonte, tipo_campo_kommo, codigo_campo_kommo) VALUES ($1, $2, $3, $4)`, [source_id, rule.campo_fonte, rule.tipo_campo_kommo, rule.codigo_campo_kommo]); } await client.query('COMMIT'); res.status(201).send({ message: 'Mapeamentos salvos com sucesso.' }); } catch (error) { await client.query('ROLLBACK'); console.error('Erro ao salvar mapeamentos:', error); res.status(500).send({ error: 'Erro ao salvar mapeamentos.' }); } finally { client.release(); } });
 
 // --- ROTAS DE SETUP ANTIGAS (Manter por segurança) ---
 app.get('/setup-db', async (req, res) => { /* ...código antigo... */ try{await pool.query(`CREATE TABLE IF NOT EXISTS leads (id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100), telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "leads" (antiga) verificada/criada com sucesso!');}catch(e){console.error(e);res.status(500).send('Erro');} });
