@@ -1,0 +1,9 @@
+{
+  "widget": {
+    "name": "ASN WebConnect",
+    "description": "Control Panel to manage lead sources and mappings for the ASN API.",
+    "short_description": "Source and Mapping Manager",
+    "settings": "ASN WebConnect Settings"
+  },
+  "settings": {}
+}

@@ -1,0 +1,27 @@
+{
+  "widget": {
+    "name": "widget.name",
+    "description": "widget.description",
+    "short_description": "widget.short_description",
+    "version": "1.0.0",
+    "interface_version": 2,
+    "init_once": false,
+    "locale": [
+      "pt",
+      "en"
+    ],
+    "installation": true, // Necessário para a área 'settings' funcionar
+    "support": {
+      "link": "https://asn-asmin-widget.vercel.app/", // Ou seu site principal
+      "email": "seu_email_de_suporte@exemplo.com" // Coloque seu email
+    }
+  },
+  "locations": [
+    "settings" // Queremos que o widget apareça na área de Configurações
+  ],
+  "settings": {
+     // Não precisamos de campos aqui, pois a configuração (API Key)
+     // está no Vercel. Deixamos vazio para o Kommo não pedir nada
+     // extra na instalação, mas o bloco é necessário se installation=true.
+  }
+}

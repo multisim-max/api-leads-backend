@@ -1,0 +1,9 @@
+{
+  "widget": {
+    "name": "ASN WebConnect",
+    "description": "Painel de Controle para gerenciar fontes de leads e mapeamentos para a API ASN.",
+    "short_description": "Gerenciador de Fontes e Mapeamentos",
+    "settings": "Configurações ASN WebConnect"
+  },
+  "settings": {}
+}
