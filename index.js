@@ -63,7 +63,7 @@ async function getRefreshTokenFromDB() {
     return result.rows[0].valor;
   } catch (error) {
     console.error('Erro ao LER refresh_token do DB:', error);
-    throw error; // Re-lança o erro para a função chamadora
+    throw error;
   }
 }
 
@@ -76,7 +76,6 @@ async function saveRefreshTokenToDB(newToken) {
     console.log('Novo refresh_token foi salvo no banco de dados com sucesso.');
   } catch (error) {
     console.error('Erro ao SALVAR novo refresh_token no DB:', error);
-    // Não lança erro aqui, pois a operação principal (getAccessToken) pode ter funcionado
   }
 }
 
@@ -103,24 +102,22 @@ async function getKommoAccessToken() {
     tokenExpiresAt = Date.now() + (response.data.expires_in - 3600) * 1000;
     console.log('Novo Access Token do Kommo obtido com sucesso.');
 
-    // Salva o novo refresh token em background
     saveRefreshTokenToDB(newRefreshToken);
 
     return kommoAccessToken;
 
   } catch (error) {
     console.error('Erro CRÍTICO ao buscar Access Token do Kommo:', error.response ? error.response.data : error.message);
-    // Limpa o token em cache se a requisição falhou (pode ser token inválido)
     kommoAccessToken = null;
     tokenExpiresAt = 0;
-    throw new Error('Falha ao autenticar com Kommo.'); // Re-lança o erro
+    throw new Error('Falha ao autenticar com Kommo.');
   }
 }
 
 // --- LÓGICA DO KOMMO (CRIAÇÃO DE LEAD) ---
 async function createKommoLead(dynamicPayload) {
   try {
-    const accessToken = await getKommoAccessToken(); // Garante token válido
+    const accessToken = await getKommoAccessToken();
     const kommoApi = axios.create({
       baseURL: process.env.KOMMO_SUBDOMAIN,
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
@@ -128,17 +125,15 @@ async function createKommoLead(dynamicPayload) {
 
     const response = await kommoApi.post('/api/v4/leads/complex', [dynamicPayload]);
     console.log('Lead complexo (dinâmico) criado no Kommo:', response.data[0].id);
-    return response.data[0]; // Retorna a resposta completa do Kommo
+    return response.data[0];
 
   } catch (error) {
     console.error('Erro ao criar lead no Kommo (createKommoLead):', error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
-    // Se for erro de autenticação, limpa o token para forçar renovação na próxima
     if (error.response && error.response.status === 401) {
       kommoAccessToken = null;
       tokenExpiresAt = 0;
       console.log('Token do Kommo invalidado devido a erro 401. Será renovado na próxima chamada.');
     }
-    // Lança o erro para a rota principal tratar (importante para logar falha)
     throw error.response ? error.response.data : new Error('Erro desconhecido ao criar lead no Kommo');
   }
 }
@@ -179,16 +174,33 @@ async function sendLeadToNotion(leadData) {
     console.log(`Lead ${nome} salvo no Notion com sucesso.`);
   } catch (error) {
     console.error('Erro ao enviar lead para o Notion:', error.body || error);
-    // Não lança erro aqui, pois é uma operação secundária
   }
 }
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 24 DA API. Corrige Custom Field ID Kommo. 🚀');
+  res.send('VERSÃO 25 DA API. Adiciona Tracking de Views. 🚀');
 });
 
-// --- ROTA INBOUND (ATUALIZADA) ---
+// --- ROTA PÚBLICA PARA TRACKING DE VIEWS ---
+app.post('/api/track-view', async (req, res) => {
+  const { url, corretorId } = req.body;
+  if (!url) {
+    return res.status(204).send(); // No Content
+  }
+  try {
+    await pool.query(
+      'INSERT INTO page_views (url, corretor_id) VALUES ($1, $2)',
+      [url, corretorId || null]
+    );
+    res.status(201).send({ message: 'View tracked.' });
+  } catch (error) {
+    console.error('Erro ao salvar page view:', error);
+    res.status(500).send({ error: 'Failed to track view.' });
+  }
+});
+
+// --- A "SUPER-ROTA" DE INBOUND (PÚBLICA) ---
 app.post('/inbound/:source_name', async (req, res) => {
   const { source_name } = req.params;
   const dadosRecebidos = req.body;
@@ -198,10 +210,7 @@ app.post('/inbound/:source_name', async (req, res) => {
   try {
     // 1. Encontrar Fonte
     const sourceResult = await pool.query('SELECT id FROM sources WHERE nome = $1', [source_name]);
-    if (sourceResult.rows.length === 0) {
-      console.warn(`Fonte "${source_name}" não encontrada.`);
-      return res.status(404).send({ error: 'Fonte não encontrada.' });
-    }
+    if (sourceResult.rows.length === 0) { console.warn(`Fonte "${source_name}" não encontrada.`); return res.status(404).send({ error: 'Fonte não encontrada.' }); }
     sourceId = sourceResult.rows[0].id;
 
     // 2. Criar Log Inicial
@@ -212,78 +221,41 @@ app.post('/inbound/:source_name', async (req, res) => {
     // 3. Buscar Regras de Mapeamento
     const mappingsResult = await pool.query('SELECT campo_fonte, tipo_campo_kommo, codigo_campo_kommo FROM field_mappings WHERE source_id = $1', [sourceId]);
     const regras = mappingsResult.rows;
-    if (regras.length === 0) {
-      console.warn(`[Log ${logId}] Nenhuma regra de mapeamento encontrada para a fonte "${source_name}".`);
-      await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [{error: "Nenhuma regra de mapeamento configurada."}, logId]);
-      return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.', logId: logId });
-    }
-
+    if (regras.length === 0) { console.warn(`[Log ${logId}] Nenhuma regra de mapeamento encontrada...`); await pool.query("UPDATE request_logs SET estado = 'falha', resposta_kommo = $1 WHERE id = $2", [{error: "Nenhuma regra de mapeamento configurada."}, logId]); return res.status(400).send({ error: 'Nenhuma regra de mapeamento configurada.', logId: logId }); }
+    
     // 4. Construir Payload Dinâmico (Corrigido para field_id)
-    const payloadKommo = {};
-    const contato = {};
-    const embedded = {};
-    const leadCustomFields = [];
-    const contactCustomFields = [];
-    const tags = [];
+    const payloadKommo = {}; const contato = {}; const embedded = {};
+    const leadCustomFields = []; const contactCustomFields = []; const tags = [];
 
     for (const regra of regras) {
       const valor = getNestedValue(dadosRecebidos, regra.campo_fonte);
       if (!valor) continue;
-
-      // Verifica se o codigo_campo_kommo é um número (ID) ou string (Code)
       const isNumericId = /^\d+$/.test(regra.codigo_campo_kommo);
-      const fieldIdentifier = isNumericId
-         ? { field_id: parseInt(regra.codigo_campo_kommo) } // Envia field_id se for número
-         : { field_code: regra.codigo_campo_kommo };      // Envia field_code se for string
-
+      const fieldIdentifier = isNumericId ? { field_id: parseInt(regra.codigo_campo_kommo) } : { field_code: regra.codigo_campo_kommo };
       switch (regra.tipo_campo_kommo) {
-        case 'lead_name':
-           payloadKommo.name = valor;
-           break;
-        case 'contact_first_name':
-           contato.first_name = valor;
-           break;
-        case 'contact_custom_field':
-          contactCustomFields.push({
-            ...fieldIdentifier, // Usa field_id ou field_code
-            values: [{ value: valor }]
-          });
-          break;
-        case 'lead_custom_field':
-          leadCustomFields.push({
-            ...fieldIdentifier, // Usa field_id ou field_code
-            values: [{ value: valor }]
-          });
-          break;
-        case 'tag':
-           tags.push({ name: valor });
-           break;
+        case 'lead_name': payloadKommo.name = valor; break;
+        case 'contact_first_name': contato.first_name = valor; break;
+        case 'contact_custom_field': contactCustomFields.push({ ...fieldIdentifier, values: [{ value: valor }] }); break;
+        case 'lead_custom_field': leadCustomFields.push({ ...fieldIdentifier, values: [{ value: valor }] }); break;
+        case 'tag': tags.push({ name: valor }); break;
       }
     }
-
+    
     // 5. Montar Payload Final (com tag fixa)
-    if (!payloadKommo.name) { payloadKommo.name = `Lead da Fonte: ${source_name}`; }
-    if (!contato.first_name) { contato.first_name = payloadKommo.name; }
-    if (contactCustomFields.length > 0) { contato.custom_fields_values = contactCustomFields; }
-    const tagWesleyExiste = tags.some(tag => tag.name === 'Wesley');
-    if (!tagWesleyExiste) { tags.push({ name: 'Wesley' }); }
-    embedded.contacts = [contato];
-    if (leadCustomFields.length > 0) { payloadKommo.custom_fields_values = leadCustomFields; }
-    if (tags.length > 0) { embedded.tags = tags; }
-    if (Object.keys(embedded).length > 0) { payloadKommo._embedded = embedded; }
+    if (!payloadKommo.name) { payloadKommo.name = `Lead da Fonte: ${source_name}`; } if (!contato.first_name) { contato.first_name = payloadKommo.name; } if (contactCustomFields.length > 0) { contato.custom_fields_values = contactCustomFields; } const tagWesleyExiste = tags.some(tag => tag.name === 'Wesley'); if (!tagWesleyExiste) { tags.push({ name: 'Wesley' }); } embedded.contacts = [contato]; if (leadCustomFields.length > 0) { payloadKommo.custom_fields_values = leadCustomFields; } if (tags.length > 0) { embedded.tags = tags; } if (Object.keys(embedded).length > 0) { payloadKommo._embedded = embedded; }
 
     // 6. Enviar ao Kommo
     console.log(`[Log ${logId}] Enviando payload para Kommo...`);
     const respostaKommo = await createKommoLead(payloadKommo);
 
-    // 6.B Enviar ao Notion (sem esperar)
+    // 6.B Enviar ao Notion
     console.log(`[Log ${logId}] Disparando envio para Notion em background...`);
     sendLeadToNotion(dadosRecebidos).catch(err => console.error(`[Log ${logId}] Erro envio Notion:`, err));
 
     // 7. Atualizar Log Sucesso
     await pool.query("UPDATE request_logs SET estado = 'sucesso', resposta_kommo = $1 WHERE id = $2", [respostaKommo, logId]);
     console.log(`[Log ${logId}] Sucesso Kommo. Lead criado: ${respostaKommo.id}`);
-
+    
     // 8. Responder ao form
     res.status(201).send({ message: 'Lead recebido e processado com sucesso!', logId: logId });
 
@@ -354,6 +326,24 @@ app.get('/api/logs/:id', checkApiKey, async (req, res) => {
   } catch (error) { console.error(`Erro ao buscar log ${id}:`, error); res.status(500).send({ error: 'Erro ao buscar detalhes do log.' }); }
 });
 
+// Rota para BUSCAR estatísticas de visualização (protegida)
+app.get('/api/views', checkApiKey, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*) AS total_views,
+        COUNT(CASE WHEN corretor_id IS NOT NULL THEN 1 END) AS views_with_corretor,
+        COUNT(CASE WHEN corretor_id IS NULL THEN 1 END) AS views_without_corretor
+      FROM page_views;
+    `);
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Erro ao buscar estatísticas de views:', error);
+    res.status(500).send({ error: 'Erro ao buscar estatísticas.' });
+  }
+});
+
+
 app.post('/api/sources', checkApiKey, async (req, res) => {
   const { nome, tipo = 'webhook', xml_url = null } = req.body;
   if (!nome) {return res.status(400).send({ error: 'O "nome" da fonte é obrigatório.' });}
@@ -401,6 +391,9 @@ app.get('/setup-sources-table', async (req, res) => { try{await pool.query(`CREA
 app.get('/setup-logs-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS request_logs (id SERIAL PRIMARY KEY, source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL, estado VARCHAR(20) DEFAULT 'pendente', dados_recebidos JSONB, resposta_kommo JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_logs_source_id ON request_logs(source_id);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_logs_estado ON request_logs(estado);`); res.status(200).send('Tabela "request_logs" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-mappings-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS field_mappings (id SERIAL PRIMARY KEY, source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE, campo_fonte VARCHAR(255) NOT NULL, tipo_campo_kommo VARCHAR(50) NOT NULL, codigo_campo_kommo VARCHAR(255) NOT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_mappings_source_id ON field_mappings(source_id);`); res.status(200).send('Tabela "field_mappings" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-add-xml-url-column', async (req, res) => { try { await pool.query(`ALTER TABLE sources ADD COLUMN IF NOT EXISTS xml_url TEXT;`); res.status(200).send('Coluna "xml_url" verificada/adicionada!'); } catch (error) { console.error('Add xml_url column error:', error); res.status(500).send('Server error.'); } });
+// ROTA SETUP para a tabela page_views (V25)
+app.get('/setup-page-views-table', async (req, res) => { try { await pool.query(`CREATE TABLE IF NOT EXISTS page_views (id SERIAL PRIMARY KEY, url TEXT, corretor_id TEXT NULL, viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_url ON page_views(url);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_corretor ON page_views(corretor_id);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_time ON page_views(viewed_at);`); res.status(200).send('Tabela "page_views" verificada/criada com sucesso!'); } catch (error) { console.error('Erro ao criar tabela page_views:', error); res.status(500).send('Erro no servidor ao criar tabela.'); } });
+// Rota antiga desativada
 app.post('/submit-lead', async (req, res) => { res.status(410).send("Rota desativada. Use /inbound/:source_name"); });
 
 // --- Iniciar o Servidor ---
