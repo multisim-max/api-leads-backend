@@ -145,43 +145,49 @@ function getNestedValue(obj, path) {
   return path.split('.').reduce((acc, part) => acc && acc[part], obj);
 }
 
-// --- LÓGICA DO NOTION (ATUALIZADA) ---
+// --- LÓGICA DO NOTION (ATUALIZADA PARA INCLUIR CORRETOR) ---
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 const notionDatabaseId = process.env.NOTION_DATABASE_ID;
 
-async function sendLeadToNotion(leadData) {
+async function sendLeadToNotion(leadData) { // leadData aqui são os dadosRecebidos
   if (!notionDatabaseId || !process.env.NOTION_API_KEY) {
     console.error('Credenciais do Notion não configuradas nas variáveis de ambiente.');
     return;
   }
+
+  // Pega os dados, incluindo o novo corretor_id
   const nome = leadData.nome || `Lead Sem Nome (${new Date().toISOString()})`;
   const email = leadData.email;
   const telefone = leadData.telefone;
   const origem = leadData.origem;
+  const corretorId = leadData.corretor_id; // <-- Pega o ID do corretor que veio do form
 
   try {
-    console.log(`Enviando lead ${nome} para o Notion DB ${notionDatabaseId}...`);
+    console.log(`Enviando lead ${nome} (Corretor: ${corretorId || 'N/A'}) para o Notion DB ${notionDatabaseId}...`);
 
-    // --- CORREÇÃO AQUI: Voltamos a usar rich_text para a Origem ---
+    // --- Monta as propriedades ---
+    // Ajuste os nomes das chaves ('Nome', 'Email', 'Corretor', etc.)
+    // para baterem EXATAMENTE com suas colunas no Notion.
     const properties = {
       'Nome': { title: [ { text: { content: nome } } ] },
       ...(email && { 'Email': { email: email } }),
       ...(telefone && { 'Telefone': { phone_number: telefone } }),
-      // A coluna Origem no Notion é do tipo Texto, então usamos rich_text
+      // Coluna Origem (Tipo Texto)
       ...(origem && { 'Origem': { rich_text: [ { text: { content: origem } } ] } }),
-      // ...(origem && { 'Origem': { select: { name: origem } } }), // Mantemos comentado
+      // Coluna Corretor (Tipo Texto)
+      ...(corretorId && { 'Corretor': { rich_text: [ { text: { content: corretorId } } ] } }),
     };
-    // --- FIM DA CORREÇÃO ---
 
     await notion.pages.create({
       parent: { database_id: notionDatabaseId },
       properties: properties,
     });
-    console.log(`Lead ${nome} salvo no Notion com sucesso.`);
+    console.log(`Lead ${nome} (Corretor: ${corretorId || 'N/A'}) salvo no Notion com sucesso.`);
   } catch (error) {
     console.error('Erro ao enviar lead para o Notion:', error.body || error);
   }
 }
+
 
 // --- LÓGICA DA META CAPI ---
 const META_PIXEL_ID = process.env.META_PIXEL_ID;
@@ -229,7 +235,7 @@ async function sendMetaCapiLeadEvent(leadData, clientIp, clientUserAgent) {
 
 // --- ROTA DE SAÚDE ---
 app.get('/', (req, res) => {
-  res.send('VERSÃO 27 DA API. Reverte Origem Notion para Rich Text. 🚀');
+  res.send('VERSÃO 28 DA API. Adiciona Corretor ao Notion. 🚀');
 });
 
 // --- ROTA PÚBLICA TRACKING VIEWS ---
@@ -308,7 +314,7 @@ app.post('/api/mappings', checkApiKey, async (req, res) => { const { source_id, 
 app.get('/setup-db', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS leads (id SERIAL PRIMARY KEY, nome VARCHAR(100), email VARCHAR(100), telefone VARCHAR(30), origem VARCHAR(50), dados_formulario JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "leads" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-config-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS configuracao (id SERIAL PRIMARY KEY, chave VARCHAR(100) UNIQUE NOT NULL, valor TEXT NOT NULL, atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); res.status(200).send('Tabela "configuracao" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.post('/set-initial-token', async (req, res) => { const { token } = req.body; if (!token) {return res.status(400).send('Token obrigatório.');} try {await pool.query(`INSERT INTO configuracao (chave, valor) VALUES ('KOMMO_REFRESH_TOKEN', $1) ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor, atualizado_em = CURRENT_TIMESTAMP`, [token]); res.status(200).send('Token salvo no DB.');}catch(e){console.error(e);res.status(500).send('Erro');} });
-app.get('/setup-sources-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS sources (id SERIAL PRIMARY KEY, nome VARCHAR(100) NOT NULL, tipo VARCHAR(50) DEFAULT 'webhook', criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_sources_nome ON sources(nome);`); res.status(200).send('Tabela "sources" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
+app.get('/setup-sources-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS sources (id SERIAL PRIMARY KEY, nome VARCHAR(100) NOT NULL, tipo VARCHAR(50) DEFAULT 'webhook', xml_url TEXT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_sources_nome ON sources(nome);`); res.status(200).send('Tabela "sources" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-logs-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS request_logs (id SERIAL PRIMARY KEY, source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL, estado VARCHAR(20) DEFAULT 'pendente', dados_recebidos JSONB, resposta_kommo JSONB, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_logs_source_id ON request_logs(source_id);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_logs_estado ON request_logs(estado);`); res.status(200).send('Tabela "request_logs" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-mappings-table', async (req, res) => { try{await pool.query(`CREATE TABLE IF NOT EXISTS field_mappings (id SERIAL PRIMARY KEY, source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE, campo_fonte VARCHAR(255) NOT NULL, tipo_campo_kommo VARCHAR(50) NOT NULL, codigo_campo_kommo VARCHAR(255) NOT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); await pool.query(`CREATE INDEX IF NOT EXISTS idx_mappings_source_id ON field_mappings(source_id);`); res.status(200).send('Tabela "field_mappings" ok.');}catch(e){console.error(e);res.status(500).send('Erro');} });
 app.get('/setup-add-xml-url-column', async (req, res) => { try { await pool.query(`ALTER TABLE sources ADD COLUMN IF NOT EXISTS xml_url TEXT;`); res.status(200).send('Coluna "xml_url" verificada/adicionada!'); } catch (error) { console.error('Add xml_url column error:', error); res.status(500).send('Server error.'); } });
